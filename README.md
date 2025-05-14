@@ -57,13 +57,13 @@ python main.py
 ![Opening Window](screenshots/opening.png)
 
 ### Sign Up Window
-![Sign Up Window](screenshots/sign.png)
+![Sign Up Window](screenshots/signup.png)
 
 ### Login Window
 ![Login Window](screenshots/login.png)
 
 ### Main Window
-![Main Window](screenshots/sign.png)
+![Main Window](screenshots/main.png)
 
 
 **Enjoy your secure and stylish password manager!** 
