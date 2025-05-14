@@ -1,37 +1,51 @@
 from dataclasses import dataclass
 from datetime import datetime
 import sqlite3
+import hashlib
+import os
 
-DB_PATH = 'data/database.db'
+DB_PATH = 'data/database.db'  # Only for users table
 
 @dataclass
 class User:
     id: int
+    email: str
+    name: str
     password_hash: str
-    salt: str
 
 @dataclass
 class PasswordEntry:
     id: int
     site: str
     username: str
-    password_enc: str  # Encrypted password
+    password_enc: str  # Encrypted password or plain
     notes: str
     created_at: datetime
     updated_at: datetime
 
 def init_db():
+    os.makedirs('data', exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     # Create users table
     c.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            password_hash TEXT NOT NULL,
-            salt TEXT NOT NULL
+            email TEXT UNIQUE NOT NULL,
+            name TEXT NOT NULL,
+            password_hash TEXT NOT NULL
         )
     ''')
-    # Create password entries table
+    conn.commit()
+    conn.close()
+
+def get_user_db_path(user_id):
+    return f'data/user_{user_id}.db'
+
+def init_user_db(user_id):
+    db_path = get_user_db_path(user_id)
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
     c.execute('''
         CREATE TABLE IF NOT EXISTS password_entries (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,3 +59,23 @@ def init_db():
     ''')
     conn.commit()
     conn.close()
+
+def create_user(email, name, password_hash):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('INSERT INTO users (email, name, password_hash) VALUES (?, ?, ?)', (email, name, password_hash))
+    user_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    init_user_db(user_id)
+    return user_id
+
+def get_user_by_email(email):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT id, email, name, password_hash FROM users WHERE email=?', (email,))
+    row = c.fetchone()
+    conn.close()
+    if row:
+        return User(*row)
+    return None

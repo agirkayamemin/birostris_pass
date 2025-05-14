@@ -1,8 +1,107 @@
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget, QTableWidgetItem, QLineEdit, QLabel, QMessageBox, QInputDialog, QDialog, QSpinBox, QCheckBox, QFormLayout, QDialogButtonBox, QApplication, QStyle, QMenu)
+from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget, QTableWidgetItem, QLineEdit, QLabel, QMessageBox, QInputDialog, QDialog, QSpinBox, QCheckBox, QFormLayout, QDialogButtonBox, QApplication, QStyle, QMenu, QSizePolicy, QSpacerItem)
 from logic.password_manager import get_all_entries, add_entry, update_entry, delete_entry
 from utils.helpers import generate_password
-from PyQt5.QtGui import QClipboard
+from PyQt5.QtGui import QClipboard, QFont, QColor, QPainter, QBrush, QPen
 from PyQt5.QtCore import Qt
+from models.models import get_user_by_email, User
+import sqlite3
+import datetime
+
+class AvatarLabel(QLabel):
+    def __init__(self, initials, parent=None):
+        super().__init__(parent)
+        self.initials = initials
+        self.setFixedSize(48, 48)
+        self.setFont(QFont('Arial', 16, QFont.Bold))
+        self.setAlignment(Qt.AlignCenter)
+        self.setStyleSheet('''
+            border-radius: 12px;
+            background: #8b8892;
+            color: #fff;
+            font: bold 16px "Segoe UI", "Arial";
+        ''')
+        self.setText(initials)
+
+class EntryCard(QWidget):
+    def __init__(self, entry, parent, on_edit, on_delete, on_copy_user, on_copy_pw):
+        super().__init__(parent)
+        self.entry = entry
+        self.setStyleSheet('''
+            QWidget {
+                background: #23272f;
+                border-radius: 12px;
+                margin-bottom: 14px;
+                border: 1.5px solid #2c313c;
+            }
+            QWidget:hover {
+                border: 1.5px solid #00bcd4;
+                background: #263238;
+            }
+        ''')
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(16, 8, 16, 8)
+        layout.setSpacing(12)
+        avatar = AvatarLabel(self.get_initials(entry.site))
+        layout.addWidget(avatar)
+        text_layout = QVBoxLayout()
+        text_layout.setSpacing(0)
+        # Title (site)
+        title = QLabel(entry.site)
+        title.setStyleSheet('color: white; font: bold 17px "Segoe UI", "Arial";')
+        # Email/username
+        subtitle = QLabel(entry.username)
+        subtitle.setStyleSheet('color: #b0b3b8; font: 13px "Segoe UI", "Arial";')
+        text_layout.addWidget(title)
+        text_layout.addWidget(subtitle)
+        text_layout.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+        layout.addLayout(text_layout)
+        layout.addStretch(1)
+        # Menu button
+        menu_btn = QPushButton('⋮')
+        menu_btn.setFixedSize(36, 36)
+        menu_btn.setStyleSheet('font-size: 22px; background: #263238; color: #00bcd4; border: none; border-radius: 18px;')
+        menu = QMenu()
+        menu.setStyleSheet('''
+            QMenu { background: #2c313c; color: #f5f6fa; border: 1px solid #444; }
+            QMenu::item { padding: 8px 24px; }
+            QMenu::item:selected { background: #00bcd4; color: #23272f; }
+        ''')
+        copy_user_action = menu.addAction('Copy Username')
+        copy_pw_action = menu.addAction('Copy Password')
+        menu.addSeparator()
+        edit_action = menu.addAction('Edit')
+        delete_action = menu.addAction('Delete')
+        def on_menu_action(action):
+            if action == copy_user_action:
+                on_copy_user(entry)
+            elif action == copy_pw_action:
+                on_copy_pw(entry)
+            elif action == edit_action:
+                on_edit(entry)
+            elif action == delete_action:
+                on_delete(entry)
+        menu.triggered.connect(on_menu_action)
+        menu_btn.setMenu(menu)
+        layout.addWidget(menu_btn)
+    def get_initials(self, text):
+        parts = text.strip().split()
+        if len(parts) == 1:
+            return (parts[0][:2]).capitalize()
+        return (parts[0][0] + parts[1][0]).upper()
+    def get_last_used(self, updated_at):
+        try:
+            dt = datetime.datetime.fromisoformat(str(updated_at))
+            delta = datetime.datetime.now() - dt
+            if delta.days > 0:
+                return f"{delta.days} days ago"
+            elif delta.seconds > 3600:
+                return f"{delta.seconds // 3600} hours ago"
+            elif delta.seconds > 60:
+                return f"{delta.seconds // 60} minutes ago"
+            else:
+                return "Less than a minute ago"
+        except Exception:
+            return str(updated_at)
 
 class EntryDialog(QDialog):
     def __init__(self, parent=None, site='', username='', password='', notes='', is_edit=False):
@@ -143,93 +242,120 @@ class PasswordGeneratorDialog(QDialog):
         QMessageBox.information(self, 'Copied', 'Password copied to clipboard!')
 
 class MainWindow(QWidget):
-    def __init__(self, master_password):
+    def __init__(self, user_id, show_login_callback=None):
         super().__init__()
-        self.master_password = master_password
-        self.setWindowTitle('Password Manager')
-        self.setGeometry(500, 200, 700, 400)
+        self.user_id = user_id
+        self.user_name = self.get_user_name()
+        self.show_login_callback = show_login_callback
+        self.setWindowTitle('Birostris Pass')
+        self.setGeometry(200, 100, 1100, 700)
         self.init_ui()
         self.load_entries()
 
+    def get_user_name(self):
+        from models.models import DB_PATH
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('SELECT name FROM users WHERE id=?', (self.user_id,))
+        row = c.fetchone()
+        conn.close()
+        return row[0] if row else 'User'
+
     def init_ui(self):
-        layout = QVBoxLayout()
-        header_layout = QHBoxLayout()
-        # Add empty labels for other columns
-        for title in ['Site', 'Username', 'Password', 'Notes']:
-            lbl = QLabel(title)
-            lbl.setStyleSheet('font-weight: bold; color: #00bcd4; padding: 6px;')
-            header_layout.addWidget(lbl)
-        # Add the '...' button for actions
-        self.actions_btn = QPushButton()
-        self.actions_btn.setFixedSize(40, 40)
-        self.actions_btn.setText('...')
-        self.actions_btn.setStyleSheet('font-size: 20px; border-radius: 20px; background: #2c313c; color: #f5f6fa; border: 1px solid #444;')
-        header_layout.addWidget(self.actions_btn)
-        header_layout.addStretch()
-        layout.addLayout(header_layout)
-        self.table = QTableWidget()
-        self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(['Site', 'Username', 'Password', 'Notes', ''])
-        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.table.horizontalHeader().setVisible(False)
-        layout.addWidget(self.table)
-        btn_layout = QHBoxLayout()
-        self.add_btn = QPushButton('Add Entry')
+        self.setStyleSheet('''
+            QWidget { background: #23272f; color: #f5f6fa; font-size: 16px; }
+            QPushButton#addItemBtn {
+                background: transparent;
+                color: #00bcd4;
+                border: 2px solid #00bcd4;
+                border-radius: 18px;
+                padding: 8px 32px;
+                font-size: 18px;
+                font-weight: bold;
+            }
+            QPushButton#addItemBtn:pressed {
+                background: #00bcd4;
+                color: #23272f;
+            }
+            QPushButton#logoutBtn {
+                background: #263238;
+                color: #f5f6fa;
+                border: none;
+                border-radius: 18px;
+                padding: 8px 32px;
+                font-size: 18px;
+                font-weight: bold;
+            }
+            QPushButton#logoutBtn:pressed {
+                background: #00bcd4;
+                color: #23272f;
+            }
+            QLabel#mainTitle { font-size: 32px; font-weight: bold; margin-bottom: 8px; }
+            QLineEdit#searchBar { background: #263238; border: 1.5px solid #00bcd4; border-radius: 12px; color: #f5f6fa; font-size: 18px; padding: 10px; }
+        ''')
+        main_layout = QVBoxLayout(self)
+        # Top bar
+        top_bar = QHBoxLayout()
+        app_label = QLabel('🔒 Birostris Pass')
+        app_label.setFont(QFont('Arial', 20, QFont.Bold))
+        top_bar.addWidget(app_label)
+        top_bar.addStretch(1)
+        user_label = QLabel(self.user_name)
+        user_label.setFont(QFont('Arial', 14, QFont.Bold))
+        top_bar.addWidget(user_label)
+        self.logout_btn = QPushButton('Logout')
+        self.logout_btn.setObjectName('logoutBtn')
+        self.logout_btn.setFixedWidth(140)
+        self.logout_btn.setMinimumHeight(40)
+        self.logout_btn.clicked.connect(self.logout)
+        top_bar.addWidget(self.logout_btn)
+        main_layout.addLayout(top_bar)
+        # Title and Add button
+        title_bar = QHBoxLayout()
+        title = QLabel('All Items')
+        title.setObjectName('mainTitle')
+        title_bar.addWidget(title)
+        title_bar.addStretch(1)
+        self.add_btn = QPushButton('Add Item')
+        self.add_btn.setObjectName('addItemBtn')
         self.add_btn.clicked.connect(self.add_entry_dialog)
-        btn_layout.addWidget(self.add_btn)
-        self.gen_btn = QPushButton('Generate Password')
-        self.gen_btn.clicked.connect(self.show_password_generator)
-        btn_layout.addWidget(self.gen_btn)
-        layout.addLayout(btn_layout)
-        self.setLayout(layout)
+        title_bar.addWidget(self.add_btn)
+        main_layout.addLayout(title_bar)
+        # Search bar
+        search_layout = QHBoxLayout()
+        self.search_bar = QLineEdit()
+        self.search_bar.setObjectName('searchBar')
+        self.search_bar.setPlaceholderText('Search...')
+        self.search_bar.textChanged.connect(self.load_entries)
+        search_layout.addWidget(self.search_bar)
+        main_layout.addLayout(search_layout)
+        # Card list area
+        self.card_area = QVBoxLayout()
+        self.card_area.setSpacing(0)
+        main_layout.addLayout(self.card_area)
+        self.setLayout(main_layout)
 
     def load_entries(self):
-        entries = get_all_entries(self.master_password)
-        self.table.setRowCount(len(entries))
-        for row_idx, entry in enumerate(entries):
-            self.table.setItem(row_idx, 0, QTableWidgetItem(entry.site))
-            self.table.setItem(row_idx, 1, QTableWidgetItem(entry.username))
-            self.table.setItem(row_idx, 2, QTableWidgetItem(entry.password_enc))
-            self.table.setItem(row_idx, 3, QTableWidgetItem(entry.notes))
-            # Actions: '...' menu button
-            menu_btn = QPushButton('...')
-            menu_btn.setFixedSize(40, 40)
-            menu_btn.setStyleSheet('font-size: 20px; border-radius: 20px; background: #2c313c; color: #f5f6fa; border: 1px solid #444;')
-            menu = QMenu()
-            menu.setStyleSheet('''
-                QMenu { background: #2c313c; color: #f5f6fa; border: 1px solid #444; }
-                QMenu::item { padding: 8px 24px; }
-                QMenu::item:selected { background: #00bcd4; color: #23272f; }
-            ''')
-            copy_user_action = menu.addAction('Copy Email or Username')
-            copy_pw_action = menu.addAction('Copy Password')
-            menu.addSeparator()
-            move_action = menu.addAction('Move to Folder')
-            menu.addSeparator()
-            edit_action = menu.addAction('Edit')
-            delete_action = menu.addAction('Delete')
-            def on_menu_action(action, eid=entry.id, entry=entry):
-                if action == copy_user_action:
-                    QApplication.clipboard().setText(entry.username, QClipboard.Clipboard)
-                    QMessageBox.information(self, 'Copied', 'Username copied!')
-                elif action == copy_pw_action:
-                    QApplication.clipboard().setText(entry.password_enc, QClipboard.Clipboard)
-                    QMessageBox.information(self, 'Copied', 'Password copied!')
-                elif action == move_action:
-                    QMessageBox.information(self, 'Move', 'Move to Folder (not implemented)')
-                elif action == edit_action:
-                    self.edit_entry_dialog(eid)
-                elif action == delete_action:
-                    self.delete_entry_confirm(eid)
-            menu.triggered.connect(lambda act, eid=entry.id: on_menu_action(act, eid, entry))
-            menu_btn.setMenu(menu)
-            action_layout = QHBoxLayout()
-            action_layout.setContentsMargins(0, 0, 0, 0)
-            action_layout.setSpacing(4)
-            action_layout.addWidget(menu_btn)
-            action_widget = QWidget()
-            action_widget.setLayout(action_layout)
-            self.table.setCellWidget(row_idx, 4, action_widget)
+        # Clear old cards
+        while self.card_area.count():
+            item = self.card_area.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+        search_text = self.search_bar.text().lower() if hasattr(self, 'search_bar') else ''
+        entries = get_all_entries(self.user_id)
+        filtered = [e for e in entries if search_text in e.site.lower() or search_text in e.username.lower() or search_text in e.notes.lower()]
+        for entry in filtered:
+            card = EntryCard(
+                entry,
+                self,
+                on_edit=self.edit_entry_dialog,
+                on_delete=self.delete_entry_confirm,
+                on_copy_user=self.copy_username,
+                on_copy_pw=self.copy_password
+            )
+            self.card_area.addWidget(card)
+        self.card_area.addStretch(1)
 
     def add_entry_dialog(self):
         dialog = EntryDialog(self)
@@ -238,66 +364,37 @@ class MainWindow(QWidget):
             if not site or not username or not password:
                 QMessageBox.warning(self, 'Error', 'All fields except notes are required!')
                 return
-            add_entry(site, username, password, notes, self.master_password)
+            add_entry(self.user_id, site, username, password, notes)
             QMessageBox.information(self, 'Success', 'Entry added!')
             self.load_entries()
 
-    def edit_entry_dialog(self, entry_id):
-        entries = get_all_entries(self.master_password)
-        entry = next((e for e in entries if e.id == entry_id), None)
-        if not entry:
-            QMessageBox.warning(self, 'Error', 'Entry not found!')
-            return
+    def edit_entry_dialog(self, entry):
         dialog = EntryDialog(self, site=entry.site, username=entry.username, password=entry.password_enc, notes=entry.notes, is_edit=True)
         if dialog.exec_() == QDialog.Accepted:
             site, username, password, notes = dialog.get_data()
             if not site or not username or not password:
                 QMessageBox.warning(self, 'Error', 'All fields except notes are required!')
                 return
-            update_entry(entry_id, site, username, password, notes, self.master_password)
+            update_entry(self.user_id, entry.id, site, username, password, notes)
             QMessageBox.information(self, 'Success', 'Entry updated!')
             self.load_entries()
 
-    def delete_entry_confirm(self, entry_id):
+    def delete_entry_confirm(self, entry):
         reply = QMessageBox.question(self, 'Delete Entry', 'Are you sure you want to delete this entry?', QMessageBox.Yes | QMessageBox.No)
         if reply == QMessageBox.Yes:
-            delete_entry(entry_id)
+            delete_entry(self.user_id, entry.id)
             QMessageBox.information(self, 'Deleted', 'Entry deleted!')
             self.load_entries()
 
-    def show_password_generator(self):
-        dialog = PasswordGeneratorDialog(self)
-        if dialog.exec_() == QDialog.Accepted:
-            pass  # Optionally, you could auto-fill the password field in EntryDialog if desired
+    def copy_username(self, entry):
+        QApplication.clipboard().setText(entry.username, QClipboard.Clipboard)
+        QMessageBox.information(self, 'Copied', 'Username copied!')
 
-    def showEvent(self, event):
-        self.setStyleSheet('''
-            QWidget { background: #23272f; color: #f5f6fa; font-size: 14px; }
-            QLineEdit, QTableWidget, QTableWidgetItem { background: #2c313c; color: #f5f6fa; border: 1px solid #444; border-radius: 4px; padding: 6px; }
-            QHeaderView::section {
-                background-color: #23272f;
-                color: #00bcd4;
-                font-weight: bold;
-                border: 1px solid #444;
-                padding: 6px;
-            }
-            QPushButton {
-                background: #23272f;
-                color: #00bcd4;
-                border: 1px solid #00bcd4;
-                border-radius: 4px;
-                padding: 6px 12px;
-                margin: 2px;
-            }
-            QPushButton:pressed {
-                background: #00bcd4;
-                color: #23272f;
-            }
-            QPushButton:focus {
-                outline: none;
-                border: 2px solid #f5f6fa;
-            }
-            QDialog { background: #23272f; }
-            QLabel { color: #f5f6fa; }
-        ''')
-        super().showEvent(event)
+    def copy_password(self, entry):
+        QApplication.clipboard().setText(entry.password_enc, QClipboard.Clipboard)
+        QMessageBox.information(self, 'Copied', 'Password copied!')
+
+    def logout(self):
+        self.close()
+        if self.show_login_callback:
+            self.show_login_callback()
