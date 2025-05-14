@@ -136,7 +136,6 @@ $RECYCLE.BIN/
 # User data and app data
 remembered_email.txt
 data/
-screenshots/
 
 # VSCode
 .vscode/ 
